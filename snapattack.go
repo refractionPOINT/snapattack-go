@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const apiRoot = "https://app.snapattack.com/api/"
+const apiRoot = "app.snapattack.com/api"
 
 type Client struct {
 	apiKey string
@@ -23,7 +23,7 @@ func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout:   1*time.Minute,
+			Timeout: 1 * time.Minute,
 			Transport: &http.Transport{
 				Dial: (&net.Dialer{
 					Timeout: 5 * time.Second,
@@ -41,28 +41,25 @@ func (c *Client) Close() error {
 func (c *Client) makeAPIRequest(verb string, path string, data interface{}) ([]byte, error) {
 	b, err := json.Marshal(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("json.Marshal(): %v", err)
 	}
-	r, err := http.NewRequest(verb, fmt.Sprintf("https://%s/%s", apiRoot, path), bytes.NewReader(b))
+	url := fmt.Sprintf("https://%s/%s", apiRoot, path)
+	r, err := http.NewRequest(verb, url, bytes.NewReader(b))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("http.NewRequest(): %v", err)
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-API-Key", c.apiKey)
 
-	if err != nil {
-		return nil, err
-	}
-
 	resp, err := c.httpClient.Do(r)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("htto.Do(): %v", err)
 	}
 	defer resp.Body.Close()
 
 	dat, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("io.ReadAll(): %v", err)
 	}
 
 	if resp.StatusCode < 200 && resp.StatusCode > 202 {
@@ -77,27 +74,47 @@ func (c *Client) makeJSONAPIRequest(verb string, path string, data interface{}, 
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(dat, out)
+	if err := json.Unmarshal(dat, out); err != nil {
+		return fmt.Errorf("json.Unmarshal(): %v: %s", err, string(dat))
+	}
+	return nil
 }
 
-func (c *Client) Export(ctx context.Context, filter Filter, target Target, format Format) ([]byte, error) {
+func (c *Client) ExportSignatures(ctx context.Context, filter Filter, target Target) ([]map[string]interface{}, error) {
 	// Issue the export
 	taskResp := struct {
 		TaskID string `json:"task_id"`
 	}{}
 	err := c.makeJSONAPIRequest(http.MethodPost, "harbor/signatures/export/", map[string]interface{}{
 		"analytic_compilation_target_id": target,
-		"filter": filter,
-		"format": []string{format},
+		"filter":                         filter,
+		"format":                         []string{"json"},
 	}, &taskResp)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error starting export: %v", err)
 	}
 
 	// Start polling for results
+	task := Task{}
 	for {
-		task := Task{}
-		
+		task = Task{}
+		if err := c.makeJSONAPIRequest(http.MethodGet, fmt.Sprintf("harbor/signatures/export/%s", taskResp.TaskID), map[string]interface{}{}, &task); err != nil {
+			return nil, fmt.Errorf("error getting task status: %v", err)
+		}
+		if task.Status == "PENDING" {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		if task.Status == "SUCCESS" {
+			break
+		}
+		return nil, fmt.Errorf("unexpected export status: %s: %v", task.Status, task.Output)
 	}
 
+	// Go get the results.
+	results := []map[string]interface{}{}
+	if err := c.makeJSONAPIRequest(http.MethodGet, fmt.Sprintf("harbor/signatures/export/%s/result/", taskResp.TaskID), map[string]interface{}{}, &results); err != nil {
+		return nil, fmt.Errorf("error fetching results: %v", err)
+	}
+	return results, nil
 }
