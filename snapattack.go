@@ -108,7 +108,7 @@ func (c *Client) ExportSignatures(ctx context.Context, filter Filter, target Tar
 		if task.Status == "SUCCESS" {
 			break
 		}
-		return nil, fmt.Errorf("unexpected export status: %s: %v", task.Status, task.Output)
+		return nil, fmt.Errorf("unexpected export status: %+v", task)
 	}
 
 	// Go get the results.
